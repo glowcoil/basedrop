@@ -1,0 +1,7 @@
+[package]
+name = "basedrop"
+version = "0.1.0"
+authors = ["Micah Johnston <micah@glowcoil.com>"]
+edition = "2018"
+
+[dependencies]
