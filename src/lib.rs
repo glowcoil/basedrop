@@ -6,13 +6,13 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-struct Node<T> {
+struct Node<T: Send> {
     next: AtomicPtr<Node<()>>,
     drop: unsafe fn(*mut Node<()>),
     data: T,
 }
 
-unsafe fn drop_node<T>(node: *mut Node<()>) {
+unsafe fn drop_node<T: Send>(node: *mut Node<()>) {
     let _ = Box::from_raw(node as *mut Node<T>);
 }
 
@@ -21,6 +21,8 @@ struct Collector {
     tail: Arc<AtomicPtr<Node<()>>>,
     stub: *mut Node<()>,
 }
+
+unsafe impl Send for Collector {}
 
 impl Collector {
     pub fn new() -> Collector {
@@ -71,7 +73,7 @@ pub struct Handle {
 }
 
 impl Handle {
-    pub fn push<T>(&self, data: T) {
+    pub fn push<T: Send>(&self, data: T) {
         let node = Box::into_raw(Box::new(Node {
             next: AtomicPtr::new(core::ptr::null_mut()),
             drop: drop_node::<T>,
