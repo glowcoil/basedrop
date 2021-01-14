@@ -6,20 +6,28 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-struct Node {
-    next: AtomicPtr<Node>,
+struct Node<T> {
+    next: AtomicPtr<Node<()>>,
+    drop: unsafe fn(*mut Node<()>),
+    data: T,
+}
+
+unsafe fn drop_node<T>(node: *mut Node<()>) {
+    let _ = Box::from_raw(node as *mut Node<T>);
 }
 
 struct Collector {
-    head: *mut Node,
-    tail: Arc<AtomicPtr<Node>>,
-    stub: *mut Node,
+    head: *mut Node<()>,
+    tail: Arc<AtomicPtr<Node<()>>>,
+    stub: *mut Node<()>,
 }
 
 impl Collector {
     pub fn new() -> Collector {
         let head = Box::into_raw(Box::new(Node {
             next: AtomicPtr::new(core::ptr::null_mut()),
+            drop: drop_node::<()>,
+            data: (),
         }));
 
         Collector {
@@ -50,7 +58,7 @@ impl Collector {
                     let tail = self.tail.swap(head, Ordering::AcqRel);
                     (*tail).next.store(head, Ordering::Release);
                 } else {
-                    let _ = Box::from_raw(head);
+                    ((*head).drop)(head);
                 }
             }
         }
@@ -59,14 +67,16 @@ impl Collector {
 
 #[derive(Clone)]
 pub struct Handle {
-    tail: Arc<AtomicPtr<Node>>,
+    tail: Arc<AtomicPtr<Node<()>>>,
 }
 
 impl Handle {
-    pub fn push(&self) {
+    pub fn push<T>(&self, data: T) {
         let node = Box::into_raw(Box::new(Node {
             next: AtomicPtr::new(core::ptr::null_mut()),
-        }));
+            drop: drop_node::<T>,
+            data,
+        })) as *mut Node<()>;
 
         let tail = self.tail.swap(node, Ordering::AcqRel);
         unsafe {
@@ -81,82 +91,29 @@ mod tests {
 
     extern crate std;
 
-    impl Collector {
-        fn len(&self) -> usize {
-            let mut len = 0;
-            let mut node = self.head;
-            loop {
-                let next = unsafe { (*node).next.load(Ordering::Acquire) };
-                if next.is_null() {
-                    break;
-                }  else {
-                    len += 1;
-                    node = next;
-                }
-            }
-            len
+    use core::sync::atomic::AtomicUsize;
+
+    struct Test(Arc<AtomicUsize>);
+
+    impl Drop for Test {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     #[test]
-    fn single_threaded() {
-        let mut collector = Collector::new();
-        let handle = collector.handle();
-        for _ in 0..100 {
-            handle.push();
-        }
+    fn collector() {
+        let counter = Arc::new(AtomicUsize::new(0));
 
-        let tail = collector.tail.load(Ordering::Relaxed);
-        assert!(collector.head != tail);
-        assert!(collector.len() == 100);
-
-        collector.collect();
-
-        let tail = collector.tail.load(Ordering::Relaxed);
-        assert!(collector.head == tail);
-        assert!(collector.head == collector.stub);
-        assert!(collector.len() == 0);
-    }
-
-    #[test]
-    fn multi_threaded() {
         let mut collector = Collector::new();
         let handle = collector.handle();
         let mut threads = alloc::vec![];
         for _ in 0..100 {
             let handle = handle.clone();
+            let counter = counter.clone();
             threads.push(std::thread::spawn(move || {
                 for _ in 0..100 {
-                    handle.push();
-                }
-            }));
-        }
-        for thread in threads {
-            thread.join().unwrap();
-        }
-
-        let tail = collector.tail.load(Ordering::Relaxed);
-        assert!(collector.head != tail);
-        assert!(collector.len() == 10000);
-
-        collector.collect();
-
-        let tail = collector.tail.load(Ordering::Relaxed);
-        assert!(collector.head == tail);
-        assert!(collector.head == collector.stub);
-        assert!(collector.len() == 0);
-    }
-
-    #[test]
-    fn simultaneous_push_and_collect() {
-        let mut collector = Collector::new();
-        let handle = collector.handle();
-        let mut threads = alloc::vec![];
-        for _ in 0..100 {
-            let handle = handle.clone();
-            threads.push(std::thread::spawn(move || {
-                for _ in 0..100 {
-                    handle.push();
+                    handle.push(Test(counter.clone()));
                 }
             }));
         }
@@ -174,6 +131,9 @@ mod tests {
         let tail = collector.tail.load(Ordering::Relaxed);
         assert!(collector.head == tail);
         assert!(collector.head == collector.stub);
-        assert!(collector.len() == 0);
+        let next = unsafe { (*collector.head).next.load(Ordering::Relaxed) };
+        assert!(next.is_null());
+
+        assert!(counter.load(Ordering::Relaxed) == 10000);
     }
 }
