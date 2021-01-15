@@ -134,6 +134,23 @@ impl Collector {
             }
         }
     }
+
+    pub fn try_cleanup(self) -> Result<(), Self> {
+        unsafe {
+            let handles = (*self.inner).handles.load(Ordering::Acquire);
+            if handles == 0 {
+                let allocs = (*self.inner).allocs.load(Ordering::Acquire);
+                if allocs == 0 {
+                    let _ = Box::from_raw(self.stub);
+                    let _ = Box::from_raw(self.inner);
+
+                    return Ok(());
+                }
+            }
+        }
+
+        Err(self)
+    }
 }
 
 #[cfg(test)]
@@ -157,8 +174,17 @@ mod tests {
     fn collector() {
         let counter = Arc::new(AtomicUsize::new(0));
 
-        let mut collector = Collector::new();
+        let collector = Collector::new();
         let handle = collector.handle();
+
+        let node = unsafe { Node::alloc(&handle, ()) };
+        let result = collector.try_cleanup();
+        assert!(result.is_err());
+        let mut collector = result.unwrap_err();
+        unsafe {
+            Node::queue_drop(node);
+        }
+
         let mut threads = alloc::vec![];
         for _ in 0..100 {
             let handle = handle.clone();
@@ -190,5 +216,10 @@ mod tests {
         assert!(next.is_null());
 
         assert!(counter.load(Ordering::Relaxed) == 10000);
+
+        core::mem::drop(handle);
+
+        let result = collector.try_cleanup();
+        assert!(result.is_ok());
     }
 }
