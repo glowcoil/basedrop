@@ -1,14 +1,13 @@
 #![no_std]
 
 use core::mem::ManuallyDrop;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 extern crate alloc;
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 
 union NodeLink {
-    tail: ManuallyDrop<Arc<AtomicPtr<Node<()>>>>,
+    tail: *mut AtomicPtr<Node<()>>,
     next: ManuallyDrop<AtomicPtr<Node<()>>>,
 }
 
@@ -24,9 +23,11 @@ unsafe fn drop_node<T: Send>(node: *mut Node<()>) {
 
 impl<T: Send> Node<T> {
     pub unsafe fn alloc(handle: &Handle, data: T) -> *mut Node<T> {
+        (*handle.inner).allocs.fetch_add(1, Ordering::Relaxed);
+
         Box::into_raw(Box::new(Node {
             link: NodeLink {
-                tail: ManuallyDrop::new(handle.tail.clone()),
+                tail: &mut (*handle.inner).tail,
             },
             drop: drop_node::<T>,
             data,
@@ -34,22 +35,47 @@ impl<T: Send> Node<T> {
     }
 
     pub unsafe fn queue_drop(node: *mut Node<T>) {
-        let tail = ManuallyDrop::take(&mut (*node).link.tail);
+        let tail = (*node).link.tail;
         (*node).link.next = ManuallyDrop::new(AtomicPtr::new(core::ptr::null_mut()));
-        let tail = tail.swap(node as *mut Node<()>, Ordering::AcqRel);
+        let tail = (*tail).swap(node as *mut Node<()>, Ordering::AcqRel);
         (*tail).link.next.store(node as *mut Node<()>, Ordering::Release);
     }
 }
 
-#[derive(Clone)]
 pub struct Handle {
-    tail: Arc<AtomicPtr<Node<()>>>,
+    inner: *mut CollectorInner,
+}
+
+unsafe impl Send for Handle {}
+
+impl Clone for Handle {
+    fn clone(&self) -> Self {
+        unsafe {
+            (*self.inner).handles.fetch_add(1, Ordering::Relaxed);
+        }
+
+        Handle { inner: self.inner }
+    }
+}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.inner).handles.fetch_sub(1, Ordering::Release);
+        }
+    }
+}
+
+struct CollectorInner {
+    handles: AtomicUsize,
+    allocs: AtomicUsize,
+    tail: AtomicPtr<Node<()>>,
 }
 
 pub struct Collector {
     head: *mut Node<()>,
-    tail: Arc<AtomicPtr<Node<()>>>,
     stub: *mut Node<()>,
+    inner: *mut CollectorInner,
 }
 
 unsafe impl Send for Collector {}
@@ -64,16 +90,26 @@ impl Collector {
             data: (),
         }));
 
+        let inner = Box::into_raw(Box::new(CollectorInner {
+            handles: AtomicUsize::new(0),
+            allocs: AtomicUsize::new(0),
+            tail: AtomicPtr::new(head),
+        }));
+
         Collector {
             head,
-            tail: Arc::new(AtomicPtr::new(head)),
             stub: head,
+            inner,
         }
     }
 
     pub fn handle(&self) -> Handle {
+        unsafe {
+            (*self.inner).handles.fetch_add(1, Ordering::Relaxed);
+        }
+
         Handle {
-            tail: self.tail.clone(),
+            inner: self.inner,
         }
     }
 
@@ -89,10 +125,11 @@ impl Collector {
                 self.head = next;
                 if head == self.stub {
                     (*head).link.next.store(core::ptr::null_mut(), Ordering::Release);
-                    let tail = self.tail.swap(head, Ordering::AcqRel);
+                    let tail = (*self.inner).tail.swap(head, Ordering::AcqRel);
                     (*tail).link.next.store(head, Ordering::Release);
                 } else {
                     ((*head).drop)(head);
+                    (*self.inner).allocs.fetch_sub(1, Ordering::Release);
                 }
             }
         }
@@ -105,6 +142,7 @@ mod tests {
 
     extern crate std;
 
+    use alloc::sync::Arc;
     use core::sync::atomic::AtomicUsize;
 
     struct Test(Arc<AtomicUsize>);
@@ -145,7 +183,7 @@ mod tests {
 
         collector.collect();
 
-        let tail = collector.tail.load(Ordering::Relaxed);
+        let tail = unsafe { (*collector.inner).tail.load(Ordering::Relaxed) };
         assert!(collector.head == tail);
         assert!(collector.head == collector.stub);
         let next = unsafe { (*collector.head).link.next.load(Ordering::Relaxed) };
