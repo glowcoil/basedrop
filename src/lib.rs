@@ -135,6 +135,14 @@ impl Collector {
         }
     }
 
+    pub fn handle_count(&self) -> usize {
+        unsafe { (*self.inner).handles.load(Ordering::Relaxed) }
+    }
+
+    pub fn alloc_count(&self) -> usize {
+        unsafe { (*self.inner).allocs.load(Ordering::Relaxed) }
+    }
+
     pub fn try_cleanup(self) -> Result<(), Self> {
         unsafe {
             let handles = (*self.inner).handles.load(Ordering::Acquire);
