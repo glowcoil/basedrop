@@ -17,6 +17,14 @@ impl<T: Send> Owned<T> {
     }
 }
 
+impl<T: Clone + Send + 'static> Clone for Owned<T> {
+    fn clone(&self) -> Self {
+        Owned {
+            node: unsafe { NonNull::new_unchecked(Node::clone(self.node.as_ptr())) },
+        }
+    }
+}
+
 impl<T: Send> Deref for Owned<T> {
     type Target = T;
 
@@ -26,7 +34,7 @@ impl<T: Send> Deref for Owned<T> {
 }
 
 impl<T: Send> DerefMut for Owned<T> {
-    fn deref_mut (&mut self) -> &mut Self::Target {
+    fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut self.node.as_mut().data }
     }
 }

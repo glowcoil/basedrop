@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 
 union NodeLink {
-    tail: *mut AtomicPtr<Node<()>>,
+    collector: *mut CollectorInner,
     next: ManuallyDrop<AtomicPtr<Node<()>>>,
 }
 
@@ -21,11 +21,11 @@ unsafe fn drop_node<T: Send>(node: *mut Node<()>) {
 
 impl<T: Send + 'static> Node<T> {
     pub unsafe fn alloc(handle: &Handle, data: T) -> *mut Node<T> {
-        (*handle.inner).allocs.fetch_add(1, Ordering::Relaxed);
+        (*handle.collector).allocs.fetch_add(1, Ordering::Relaxed);
 
         Box::into_raw(Box::new(Node {
             link: NodeLink {
-                tail: &mut (*handle.inner).tail,
+                collector: handle.collector,
             },
             drop: drop_node::<T>,
             data,
@@ -33,18 +33,29 @@ impl<T: Send + 'static> Node<T> {
     }
 
     pub unsafe fn queue_drop(node: *mut Node<T>) {
-        let tail = (*node).link.tail;
+        let collector = (*node).link.collector;
         (*node).link.next = ManuallyDrop::new(AtomicPtr::new(core::ptr::null_mut()));
-        let tail = (*tail).swap(node as *mut Node<()>, Ordering::AcqRel);
-        (*tail)
-            .link
-            .next
-            .store(node as *mut Node<()>, Ordering::Release);
+        let tail = (*collector).tail.swap(node as *mut Node<()>, Ordering::AcqRel);
+        (*tail).link.next.store(node as *mut Node<()>, Ordering::Release);
+    }
+}
+
+impl<T: Clone + Send + 'static> Node<T> {
+    pub unsafe fn clone(node: *mut Node<T>) -> *mut Node<T> {
+        (*(*node).link.collector).allocs.fetch_add(1, Ordering::Relaxed);
+
+        Box::into_raw(Box::new(Node {
+            link: NodeLink {
+                collector: (*node).link.collector,
+            },
+            drop: drop_node::<T>,
+            data: (*node).data.clone(),
+        }))
     }
 }
 
 pub struct Handle {
-    inner: *mut CollectorInner,
+    collector: *mut CollectorInner,
 }
 
 unsafe impl Send for Handle {}
@@ -52,17 +63,17 @@ unsafe impl Send for Handle {}
 impl Clone for Handle {
     fn clone(&self) -> Self {
         unsafe {
-            (*self.inner).handles.fetch_add(1, Ordering::Relaxed);
+            (*self.collector).handles.fetch_add(1, Ordering::Relaxed);
         }
 
-        Handle { inner: self.inner }
+        Handle { collector: self.collector }
     }
 }
 
 impl Drop for Handle {
     fn drop(&mut self) {
         unsafe {
-            (*self.inner).handles.fetch_sub(1, Ordering::Release);
+            (*self.collector).handles.fetch_sub(1, Ordering::Release);
         }
     }
 }
@@ -109,7 +120,7 @@ impl Collector {
             (*self.inner).handles.fetch_add(1, Ordering::Relaxed);
         }
 
-        Handle { inner: self.inner }
+        Handle { collector: self.inner }
     }
 
     pub fn collect(&mut self) {
