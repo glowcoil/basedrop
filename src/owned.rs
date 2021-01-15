@@ -3,7 +3,7 @@ use crate::{Handle, Node};
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
-pub struct Owned<T: Send> {
+pub struct Owned<T: Send + 'static> {
     node: NonNull<Node<T>>,
 }
 

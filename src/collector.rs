@@ -19,7 +19,7 @@ unsafe fn drop_node<T: Send>(node: *mut Node<()>) {
     let _ = Box::from_raw(node as *mut Node<T>);
 }
 
-impl<T: Send> Node<T> {
+impl<T: Send + 'static> Node<T> {
     pub unsafe fn alloc(handle: &Handle, data: T) -> *mut Node<T> {
         (*handle.inner).allocs.fetch_add(1, Ordering::Relaxed);
 
