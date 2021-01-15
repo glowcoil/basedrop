@@ -6,17 +6,39 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-struct Node<T: Send> {
+pub struct Node<T> {
+    tail: Arc<AtomicPtr<Node<()>>>,
     next: AtomicPtr<Node<()>>,
     drop: unsafe fn(*mut Node<()>),
-    data: T,
+    pub data: T,
 }
 
 unsafe fn drop_node<T: Send>(node: *mut Node<()>) {
     let _ = Box::from_raw(node as *mut Node<T>);
 }
 
-struct Collector {
+impl<T: Send> Node<T> {
+    pub unsafe fn alloc(handle: &Handle, data: T) -> *mut Node<T> {
+        Box::into_raw(Box::new(Node {
+            tail: handle.tail.clone(),
+            next: AtomicPtr::new(core::ptr::null_mut()),
+            drop: drop_node::<T>,
+            data,
+        }))
+    }
+
+    pub unsafe fn queue_drop(node: *mut Node<T>) {
+        let tail = (*node).tail.swap(node as *mut Node<()>, Ordering::AcqRel);
+        (*tail).next.store(node as *mut Node<()>, Ordering::Release);
+    }
+}
+
+#[derive(Clone)]
+pub struct Handle {
+    tail: Arc<AtomicPtr<Node<()>>>,
+}
+
+pub struct Collector {
     head: *mut Node<()>,
     tail: Arc<AtomicPtr<Node<()>>>,
     stub: *mut Node<()>,
@@ -26,15 +48,18 @@ unsafe impl Send for Collector {}
 
 impl Collector {
     pub fn new() -> Collector {
+        let tail = Arc::new(AtomicPtr::new(core::ptr::null_mut()));
         let head = Box::into_raw(Box::new(Node {
+            tail: tail.clone(),
             next: AtomicPtr::new(core::ptr::null_mut()),
             drop: drop_node::<()>,
             data: (),
         }));
+        tail.store(head, Ordering::Release);
 
         Collector {
             head,
-            tail: Arc::new(AtomicPtr::new(head)),
+            tail: tail,
             stub: head,
         }
     }
@@ -45,7 +70,7 @@ impl Collector {
         }
     }
 
-    fn collect(&mut self) {
+    pub fn collect(&mut self) {
         loop {
             unsafe {
                 let next = (*self.head).next.load(Ordering::Acquire);
@@ -63,26 +88,6 @@ impl Collector {
                     ((*head).drop)(head);
                 }
             }
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct Handle {
-    tail: Arc<AtomicPtr<Node<()>>>,
-}
-
-impl Handle {
-    pub fn push<T: Send>(&self, data: T) {
-        let node = Box::into_raw(Box::new(Node {
-            next: AtomicPtr::new(core::ptr::null_mut()),
-            drop: drop_node::<T>,
-            data,
-        })) as *mut Node<()>;
-
-        let tail = self.tail.swap(node, Ordering::AcqRel);
-        unsafe {
-            (*tail).next.store(node, Ordering::Release);
         }
     }
 }
@@ -115,7 +120,10 @@ mod tests {
             let counter = counter.clone();
             threads.push(std::thread::spawn(move || {
                 for _ in 0..100 {
-                    handle.push(Test(counter.clone()));
+                    let node = unsafe { Node::alloc(&handle, Test(counter.clone())) };
+                    unsafe {
+                        Node::queue_drop(node);
+                    }
                 }
             }));
         }
