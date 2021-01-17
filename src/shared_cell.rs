@@ -1,5 +1,6 @@
 use crate::{Node, Shared, SharedInner};
 
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 pub struct SharedCell<T: Send + 'static> {
@@ -14,7 +15,7 @@ impl<T: Send + 'static> SharedCell<T> {
     pub fn new(value: Shared<T>) -> SharedCell<T> {
         SharedCell {
             readers: AtomicUsize::new(0),
-            node: AtomicPtr::new(value.node),
+            node: AtomicPtr::new(value.node.as_ptr()),
         }
     }
 
@@ -22,7 +23,7 @@ impl<T: Send + 'static> SharedCell<T> {
         self.readers.fetch_add(1, Ordering::SeqCst);
         let node = self.node.load(Ordering::SeqCst);
         self.readers.fetch_sub(1, Ordering::Relaxed);
-        Shared { node }
+        Shared { node: unsafe { NonNull::new_unchecked(node) } }
     }
 
     pub fn set(&self, value: Shared<T>) {
@@ -31,12 +32,12 @@ impl<T: Send + 'static> SharedCell<T> {
     }
 
     pub fn replace(&self, value: Shared<T>) -> Shared<T> {
-        let old = self.node.swap(value.node, Ordering::AcqRel);
+        let old = self.node.swap(value.node.as_ptr(), Ordering::AcqRel);
         while self.readers.load(Ordering::Relaxed) != 0 {}
-        Shared { node: old }
+        Shared { node: unsafe { NonNull::new_unchecked(old) } }
     }
 
     pub fn into_inner(self) -> Shared<T> {
-        Shared { node: self.node.into_inner() }
+        Shared { node: unsafe { NonNull::new_unchecked(self.node.into_inner()) } }
     }
 }
