@@ -75,37 +75,54 @@ impl<T> Drop for Shared<T> {
     }
 }
 
-#[test]
-fn test() {
-    use crate::Collector;
+#[cfg(test)]
+mod tests {
+    use crate::{Collector, Shared};
 
-    extern crate alloc;
-    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
-    struct Test(Arc<AtomicUsize>);
+    #[test]
+    fn shared() {
+        extern crate alloc;
+        use alloc::sync::Arc;
 
-    impl Drop for Test {
-        fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::Relaxed);
+        struct Test(Arc<AtomicUsize>);
+
+        impl Drop for Test {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
         }
+
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        let mut collector = Collector::new();
+        let handle = collector.handle();
+
+        let shared = Shared::new(&handle, Test(counter.clone()));
+        let mut copies = alloc::vec::Vec::new();
+        for _ in 0..10 {
+            copies.push(shared.clone());
+        }
+
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        core::mem::drop(shared);
+        core::mem::drop(copies);
+        collector.collect();
+
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
 
-    let counter = Arc::new(AtomicUsize::new(0));
+    #[test]
+    fn get_mut() {
+        let collector = Collector::new();
+        let mut x = Shared::new(&collector.handle(), 3);
 
-    let mut collector = Collector::new();
-    let handle = collector.handle();
+        *Shared::get_mut(&mut x).unwrap() = 4;
+        assert_eq!(*x, 4);
 
-    let shared = Shared::new(&handle, Test(counter.clone()));
-    let mut copies = alloc::vec::Vec::new();
-    for _ in 0..10 {
-        copies.push(shared.clone());
+        let _y = Shared::clone(&x);
+        assert!(Shared::get_mut(&mut x).is_none());
     }
-
-    assert_eq!(counter.load(Ordering::Relaxed), 0);
-
-    core::mem::drop(shared);
-    core::mem::drop(copies);
-    collector.collect();
-
-    assert_eq!(counter.load(Ordering::Relaxed), 1);
 }
