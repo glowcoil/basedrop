@@ -20,8 +20,10 @@ unsafe fn drop_node<T: Send>(node: *mut Node<()>) {
 }
 
 impl<T: Send + 'static> Node<T> {
-    pub unsafe fn alloc(handle: &Handle, data: T) -> *mut Node<T> {
-        (*handle.collector).allocs.fetch_add(1, Ordering::Relaxed);
+    pub fn alloc(handle: &Handle, data: T) -> *mut Node<T> {
+        unsafe {
+            (*handle.collector).allocs.fetch_add(1, Ordering::Relaxed);
+        }
 
         Box::into_raw(Box::new(Node {
             link: NodeLink {
@@ -193,7 +195,7 @@ mod tests {
         let collector = Collector::new();
         let handle = collector.handle();
 
-        let node = unsafe { Node::alloc(&handle, ()) };
+        let node = Node::alloc(&handle, ());
         let result = collector.try_cleanup();
         assert!(result.is_err());
         let mut collector = result.unwrap_err();
@@ -207,7 +209,7 @@ mod tests {
             let counter = counter.clone();
             threads.push(std::thread::spawn(move || {
                 for _ in 0..100 {
-                    let node = unsafe { Node::alloc(&handle, Test(counter.clone())) };
+                    let node = Node::alloc(&handle, Test(counter.clone()));
                     unsafe {
                         Node::queue_drop(node);
                     }
