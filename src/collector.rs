@@ -63,6 +63,7 @@ pub struct Handle {
 }
 
 unsafe impl Send for Handle {}
+unsafe impl Sync for Handle {}
 
 impl Clone for Handle {
     fn clone(&self) -> Self {
