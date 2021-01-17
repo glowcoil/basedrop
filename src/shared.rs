@@ -1,7 +1,7 @@
 use crate::{Handle, Node};
 
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering, fence};
 
 pub struct Shared<T: Send + 'static> {
     pub(crate) node: *mut Node<SharedInner<T>>,
@@ -19,13 +19,10 @@ impl<T: Send + 'static> Shared<T> {
     pub fn new(handle: &Handle, data: T) -> Shared<T> {
         Shared {
             node: unsafe {
-                Node::alloc(
-                    handle,
-                    SharedInner {
-                        count: AtomicUsize::new(1),
-                        data,
-                    },
-                )
+                Node::alloc(handle, SharedInner {
+                    count: AtomicUsize::new(1),
+                    data,
+                })
             },
         }
     }
@@ -61,6 +58,7 @@ impl<T: Send> Drop for Shared<T> {
             let count = (*self.node).data.count.fetch_sub(1, Ordering::Release);
 
             if count == 1 {
+                fence(Ordering::Acquire);
                 Node::queue_drop(self.node);
             }
         }
