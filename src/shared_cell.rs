@@ -36,8 +36,10 @@ impl<T: Send + 'static> SharedCell<T> {
         while self.readers.load(Ordering::Relaxed) != 0 {}
         Shared { node: unsafe { NonNull::new_unchecked(old) } }
     }
+}
 
-    pub fn into_inner(self) -> Shared<T> {
-        Shared { node: unsafe { NonNull::new_unchecked(self.node.into_inner()) } }
+impl<T: Send> Drop for SharedCell<T> {
+    fn drop(&mut self) {
+        let _ = Shared { node: unsafe { NonNull::new_unchecked(self.node.load(Ordering::Relaxed)) } };
     }
 }
