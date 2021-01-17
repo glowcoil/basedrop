@@ -57,12 +57,6 @@ impl<T: Send> Deref for Shared<T> {
     }
 }
 
-impl<T: Send> DerefMut for Shared<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut self.node.as_mut().data.data }
-    }
-}
-
 impl<T: Send> Drop for Shared<T> {
     fn drop(&mut self) {
         unsafe {
