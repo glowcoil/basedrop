@@ -47,6 +47,15 @@ impl<T> SharedCell<T> {
             phantom: PhantomData,
         }
     }
+
+    pub fn into_inner(mut self) -> Shared<T> {
+        let node = core::mem::replace(&mut self.node, AtomicPtr::new(core::ptr::null_mut()));
+        core::mem::forget(self);
+        Shared {
+            node: unsafe { NonNull::new_unchecked(node.into_inner()) },
+            phantom: PhantomData,
+        }
+    }
 }
 
 impl<T> Drop for SharedCell<T> {
