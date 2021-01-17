@@ -129,11 +129,15 @@ impl Collector {
     }
 
     pub fn collect(&mut self) {
+        while self.collect_one() {}
+    }
+
+    pub fn collect_one(&mut self) -> bool {
         loop {
             unsafe {
                 let next = (*self.head).link.next.load(Ordering::Acquire);
                 if next.is_null() {
-                    break;
+                    return false;
                 }
 
                 let head = self.head;
@@ -145,6 +149,7 @@ impl Collector {
                 } else {
                     ((*head).drop)(head);
                     (*self.inner).allocs.fetch_sub(1, Ordering::Relaxed);
+                    return true;
                 }
             }
         }
