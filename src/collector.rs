@@ -36,7 +36,7 @@ impl<T: Send + 'static> Node<T> {
         let collector = (*node).link.collector;
         (*node).link.next = ManuallyDrop::new(AtomicPtr::new(core::ptr::null_mut()));
         let tail = (*collector).tail.swap(node as *mut Node<()>, Ordering::AcqRel);
-        (*tail).link.next.store(node as *mut Node<()>, Ordering::Release);
+        (*tail).link.next.store(node as *mut Node<()>, Ordering::Relaxed);
     }
 }
 
@@ -134,15 +134,12 @@ impl Collector {
                 let head = self.head;
                 self.head = next;
                 if head == self.stub {
-                    (*head)
-                        .link
-                        .next
-                        .store(core::ptr::null_mut(), Ordering::Release);
-                    let tail = (*self.inner).tail.swap(head, Ordering::AcqRel);
-                    (*tail).link.next.store(head, Ordering::Release);
+                    (*head).link.next.store(core::ptr::null_mut(), Ordering::Relaxed);
+                    let tail = (*self.inner).tail.swap(head, Ordering::Release);
+                    (*tail).link.next.store(head, Ordering::Relaxed);
                 } else {
                     ((*head).drop)(head);
-                    (*self.inner).allocs.fetch_sub(1, Ordering::Release);
+                    (*self.inner).allocs.fetch_sub(1, Ordering::Relaxed);
                 }
             }
         }
@@ -158,10 +155,8 @@ impl Collector {
 
     pub fn try_cleanup(self) -> Result<(), Self> {
         unsafe {
-            let handles = (*self.inner).handles.load(Ordering::Acquire);
-            if handles == 0 {
-                let allocs = (*self.inner).allocs.load(Ordering::Acquire);
-                if allocs == 0 {
+            if (*self.inner).handles.load(Ordering::Acquire) == 0 {
+                if (*self.inner).allocs.load(Ordering::Acquire) == 0 {
                     let _ = Box::from_raw(self.stub);
                     let _ = Box::from_raw(self.inner);
 
