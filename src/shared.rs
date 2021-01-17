@@ -27,6 +27,16 @@ impl<T: Send + 'static> Shared<T> {
             },
         }
     }
+
+    pub fn get_mut(this: &mut Self) -> Option<&mut T> {
+        unsafe {
+            if this.node.as_ref().data.count.load(Ordering::Acquire) == 1 {
+                Some(&mut this.node.as_mut().data.data)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 impl<T: Send> Clone for Shared<T> {
