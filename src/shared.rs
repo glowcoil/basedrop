@@ -4,10 +4,10 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct Shared<T: Send + 'static> {
-    node: *mut Node<SharedInner<T>>,
+    pub(crate) node: *mut Node<SharedInner<T>>,
 }
 
-struct SharedInner<T: Send + 'static> {
+pub(crate) struct SharedInner<T: Send + 'static> {
     count: AtomicUsize,
     data: T,
 }
