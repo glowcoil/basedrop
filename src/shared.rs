@@ -1,14 +1,16 @@
 use crate::{Handle, Node};
 
-use core::ops::{Deref, DerefMut};
+use core::marker::PhantomData;
+use core::ops::Deref;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering, fence};
 
-pub struct Shared<T: Send + 'static> {
+pub struct Shared<T> {
     pub(crate) node: NonNull<Node<SharedInner<T>>>,
+    pub(crate) phantom: PhantomData<SharedInner<T>>,
 }
 
-pub(crate) struct SharedInner<T: Send + 'static> {
+pub(crate) struct SharedInner<T> {
     count: AtomicUsize,
     data: T,
 }
@@ -25,9 +27,12 @@ impl<T: Send + 'static> Shared<T> {
                     data,
                 }))
             },
+            phantom: PhantomData,
         }
     }
+}
 
+impl<T> Shared<T> {
     pub fn get_mut(this: &mut Self) -> Option<&mut T> {
         unsafe {
             if this.node.as_ref().data.count.load(Ordering::Acquire) == 1 {
@@ -39,17 +44,17 @@ impl<T: Send + 'static> Shared<T> {
     }
 }
 
-impl<T: Send> Clone for Shared<T> {
+impl<T> Clone for Shared<T> {
     fn clone(&self) -> Self {
         unsafe {
             self.node.as_ref().data.count.fetch_add(1, Ordering::Relaxed);
         }
 
-        Shared { node: self.node }
+        Shared { node: self.node, phantom: PhantomData }
     }
 }
 
-impl<T: Send> Deref for Shared<T> {
+impl<T> Deref for Shared<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -57,7 +62,7 @@ impl<T: Send> Deref for Shared<T> {
     }
 }
 
-impl<T: Send> Drop for Shared<T> {
+impl<T> Drop for Shared<T> {
     fn drop(&mut self) {
         unsafe {
             let count = self.node.as_ref().data.count.fetch_sub(1, Ordering::Release);

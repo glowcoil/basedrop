@@ -15,7 +15,7 @@ pub struct Node<T> {
     pub data: T,
 }
 
-unsafe fn drop_node<T: Send>(node: *mut Node<()>) {
+unsafe fn drop_node<T>(node: *mut Node<()>) {
     let _ = Box::from_raw(node as *mut Node<T>);
 }
 
@@ -33,7 +33,9 @@ impl<T: Send + 'static> Node<T> {
             data,
         }))
     }
+}
 
+impl<T> Node<T> {
     pub unsafe fn queue_drop(node: *mut Node<T>) {
         let collector = (*node).link.collector;
         (*node).link.next = ManuallyDrop::new(AtomicPtr::new(core::ptr::null_mut()));
@@ -42,7 +44,7 @@ impl<T: Send + 'static> Node<T> {
     }
 }
 
-impl<T: Clone + Send + 'static> Node<T> {
+impl<T: Clone> Node<T> {
     pub unsafe fn clone(node: *mut Node<T>) -> *mut Node<T> {
         (*(*node).link.collector).allocs.fetch_add(1, Ordering::Relaxed);
 
