@@ -1,5 +1,8 @@
 # 🐟⤵️ basedrop
 
+[![Cargo](https://img.shields.io/crates/v/basedrop.svg)](https://crates.io/crates/basedrop)
+[![Documentation](https://docs.rs/basedrop/badge.svg)](https://docs.rs/basedrop)
+
 A set of memory-management tools for real-time audio and other latency-critical scenarios.
 
 `basedrop` provides smart pointers analogous to `Box` and `Arc` which mark their contents for deferred collection on another thread rather than immediately freeing it, making them safe to drop on a real-time thread.
