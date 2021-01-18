@@ -6,4 +6,4 @@ A set of memory-management tools for real-time audio and other latency-critical 
 
 ## License
 
-basedrop is distributed under the terms of both the [MIT license](LICENSE-MIT) and the [Apache license, version 2.0](LICENSE-APACHE). Contributions are accepted under the same terms.
+`basedrop` is distributed under the terms of both the [MIT license](LICENSE-MIT) and the [Apache license, version 2.0](LICENSE-APACHE). Contributions are accepted under the same terms.

@@ -5,6 +5,16 @@ use core::ops::Deref;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering, fence};
 
+/// A reference-counted smart pointer with deferred collection, analogous to
+/// `Arc`.
+///
+/// When a `Shared<T>`'s reference count goes to zero, its contents are added
+/// to the drop queue of the [`Collector`] whose [`Handle`] it was originally
+/// allocated with. As the collector may be on another thread, contents are
+/// required to be `Send + 'static`.
+///
+/// [`Collector`]: crate::Collector
+/// [`Handle`]: crate::Handle
 pub struct Shared<T> {
     pub(crate) node: NonNull<Node<SharedInner<T>>>,
     pub(crate) phantom: PhantomData<SharedInner<T>>,
@@ -19,6 +29,15 @@ unsafe impl<T: Send + Sync> Send for Shared<T> {}
 unsafe impl<T: Send + Sync> Sync for Shared<T> {}
 
 impl<T: Send + 'static> Shared<T> {
+    /// Constructs a new `Shared<T>`.
+    ///
+    /// # Examples
+    /// ```
+    /// use basedrop::{Collector, Shared};
+    ///
+    /// let collector = Collector::new();
+    /// let three = Shared::new(&collector.handle(), 3);
+    /// ```
     pub fn new(handle: &Handle, data: T) -> Shared<T> {
         Shared {
             node: unsafe {
@@ -33,6 +52,23 @@ impl<T: Send + 'static> Shared<T> {
 }
 
 impl<T> Shared<T> {
+    /// Returns a mutable reference to the contained value if there are no
+    /// other extant `Shared` pointers to the same allocation; otherwise
+    /// returns `None`.
+    ///
+    /// # Examples
+    /// ```
+    /// use basedrop::{Collector, Shared};
+    ///
+    /// let collector = Collector::new();
+    /// let mut x = Shared::new(&collector.handle(), 3);
+    ///
+    /// *Shared::get_mut(&mut x).unwrap() = 4;
+    /// assert_eq!(*x, 4);
+    ///
+    /// let _y = Shared::clone(&x);
+    /// assert!(Shared::get_mut(&mut x).is_none());
+    /// ```
     pub fn get_mut(this: &mut Self) -> Option<&mut T> {
         unsafe {
             if this.node.as_ref().data.count.load(Ordering::Acquire) == 1 {

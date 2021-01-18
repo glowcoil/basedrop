@@ -9,9 +9,20 @@ union NodeLink {
     next: ManuallyDrop<AtomicPtr<Node<()>>>,
 }
 
+/// An allocation that can be added to its associated [`Collector`]'s drop
+/// queue.
+///
+/// `Node` provides a low-level interface intended for use in the
+/// implementation of smart pointers and data structure internals. It is used
+/// in the implementations of [`Owned`] and [`Shared`].
+///
+/// [`Collector`]: crate::Collector
+/// [`Owned`]: crate::Owned
+/// [`Shared`]: crate::Shared
 pub struct Node<T> {
     link: NodeLink,
     drop: unsafe fn(*mut Node<()>),
+    /// The data stored in this allocation.
     pub data: T,
 }
 
@@ -20,6 +31,19 @@ unsafe fn drop_node<T>(node: *mut Node<()>) {
 }
 
 impl<T: Send + 'static> Node<T> {
+    /// Allocates a `Node` with the given data. Note that the `Node` will not
+    /// be added to the drop queue or freed unless [`queue_drop`] is called.
+    ///
+    /// # Examples
+    /// ```
+    /// use basedrop::{Collector, Handle, Node};
+    ///
+    /// let mut collector = Collector::new();
+    /// let handle = collector.handle();
+    /// let node = Node::alloc(&handle, 3);
+    /// ```
+    ///
+    /// [`queue_drop`]: crate::Node::queue_drop
     pub fn alloc(handle: &Handle, data: T) -> *mut Node<T> {
         unsafe {
             (*handle.collector).allocs.fetch_add(1, Ordering::Relaxed);
@@ -36,6 +60,31 @@ impl<T: Send + 'static> Node<T> {
 }
 
 impl<T> Node<T> {
+    /// Adds a `Node` to its associated [`Collector`]'s drop queue. The `Node`
+    /// and its contained data may be dropped at a later time when
+    /// [`Collector::collect`] or [`Collector::collect_one`] is called.
+    ///
+    /// The argument must point to a valid `Node` previously allocated with
+    /// [`Node::alloc`]. `queue_drop` may only be called once for a given
+    /// `Node`, and the `Node`'s data must not be accessed afterwards.
+    ///
+    /// # Examples
+    /// ```
+    /// use basedrop::{Collector, Handle, Node};
+    ///
+    /// let mut collector = Collector::new();
+    /// let handle = collector.handle();
+    /// let node = Node::alloc(&handle, 3);
+    ///
+    /// unsafe {
+    ///     Node::queue_drop(node);
+    /// }
+    /// ```
+    ///
+    /// [`Collector`]: crate::Collector
+    /// [`Collector::collect`]: crate::Collector::collect
+    /// [`Collector::collect_one`]: crate::Collector::collect_one
+    /// [`Node::alloc`]: crate::Node::alloc
     pub unsafe fn queue_drop(node: *mut Node<T>) {
         let collector = (*node).link.collector;
         (*node).link.next = ManuallyDrop::new(AtomicPtr::new(core::ptr::null_mut()));
@@ -43,6 +92,15 @@ impl<T> Node<T> {
         (*tail).link.next.store(node as *mut Node<()>, Ordering::Relaxed);
     }
 
+    /// Gets a [`Handle`] to this `Node`'s associated [`Collector`].
+    ///
+    /// The argument must point to a valid `Node` previously allocated with
+    /// [`Node::alloc`], on which [`queue_drop`] has not been called.
+    ///
+    /// [`Handle`]: crate::Collector
+    /// [`Collector`]: crate::Collector
+    /// [`Node::alloc`]: crate::Node::alloc
+    /// [`queue_drop`]: crate::Node::queue_drop
     pub unsafe fn handle(node: *mut Node<T>) -> Handle {
         let collector = (*node).link.collector;
         (*collector).handles.fetch_add(1, Ordering::Relaxed);
@@ -50,6 +108,15 @@ impl<T> Node<T> {
     }
 }
 
+/// A handle to a [`Collector`], used when allocating [`Owned`] and [`Shared`]
+/// values.
+///
+/// Multiple `Handle`s to a given [`Collector`] can exist at one time, and they
+/// can be safely moved and shared between threads.
+///
+/// [`Collector`]: crate::Collector
+/// [`Owned`]: crate::Owned
+/// [`Shared`]: crate::Shared
 pub struct Handle {
     collector: *mut CollectorInner,
 }
@@ -81,6 +148,16 @@ struct CollectorInner {
     tail: AtomicPtr<Node<()>>,
 }
 
+/// A garbage collector for [`Owned`] and [`Shared`] allocations.
+///
+/// If a `Collector` is dropped, it will leak all associated allocations as
+/// well as its internal data structures. To avoid this, ensure that all
+/// allocations have been collected and all [`Handle`]s have been dropped, then
+/// call [`try_cleanup`].
+///
+/// [`Owned`]: crate::Owned
+/// [`Shared`]: crate::Shared
+/// [`try_cleanup`]: crate::Collector::try_cleanup
 pub struct Collector {
     head: *mut Node<()>,
     stub: *mut Node<()>,
@@ -90,6 +167,7 @@ pub struct Collector {
 unsafe impl Send for Collector {}
 
 impl Collector {
+    /// Constructs a new `Collector`.
     pub fn new() -> Collector {
         let head = Box::into_raw(Box::new(Node {
             link: NodeLink {
@@ -112,6 +190,9 @@ impl Collector {
         }
     }
 
+    /// Gets a [`Handle`] to this `Collector`.
+    ///
+    /// [`Handle`]: crate::Handle
     pub fn handle(&self) -> Handle {
         unsafe {
             (*self.inner).handles.fetch_add(1, Ordering::Relaxed);
@@ -120,10 +201,59 @@ impl Collector {
         Handle { collector: self.inner }
     }
 
+    /// Drops all of the garbage in the queue.
+    ///
+    /// # Examples
+    /// ```
+    /// use basedrop::{Collector, Handle, Owned};
+    /// use core::mem::drop;
+    ///
+    /// let mut collector = Collector::new();
+    /// let handle = collector.handle();
+    /// let x = Owned::new(&handle, 1);
+    /// let y = Owned::new(&handle, 2);
+    /// let z = Owned::new(&handle, 3);
+    ///
+    /// assert_eq!(collector.alloc_count(), 3);
+    ///
+    /// drop(x);
+    /// drop(y);
+    /// drop(z);
+    /// collector.collect();
+    ///
+    /// assert_eq!(collector.alloc_count(), 0);
+    /// ```
     pub fn collect(&mut self) {
         while self.collect_one() {}
     }
 
+    /// Attempts to drop the first allocation in the queue. If successful,
+    /// returns true; otherwise returns false.
+    ///
+    /// # Examples
+    /// ```
+    /// use basedrop::{Collector, Handle, Owned};
+    /// use core::mem::drop;
+    ///
+    /// let mut collector = Collector::new();
+    /// let handle = collector.handle();
+    /// let x = Owned::new(&handle, 1);
+    /// let y = Owned::new(&handle, 2);
+    /// let z = Owned::new(&handle, 3);
+    ///
+    /// assert_eq!(collector.alloc_count(), 3);
+    ///
+    /// drop(x);
+    /// drop(y);
+    /// drop(z);
+    ///
+    /// assert!(collector.collect_one());
+    /// assert!(collector.collect_one());
+    /// assert!(collector.collect_one());
+    ///
+    /// assert!(!collector.collect_one());
+    /// assert_eq!(collector.alloc_count(), 0);
+    /// ```
     pub fn collect_one(&mut self) -> bool {
         loop {
             unsafe {
@@ -147,14 +277,43 @@ impl Collector {
         }
     }
 
+    /// Gets the number of live [`Handle`]s to this `Collector`.
+    ///
+    /// [`Handle`]: crate::Handle
     pub fn handle_count(&self) -> usize {
         unsafe { (*self.inner).handles.load(Ordering::Relaxed) }
     }
 
+    /// Gets the number of live allocations associated with this `Collector`.
     pub fn alloc_count(&self) -> usize {
         unsafe { (*self.inner).allocs.load(Ordering::Relaxed) }
     }
 
+    /// Attempts to free all resources associated with this `Collector`. This
+    /// method will fail and return the original `Collector` if there are any
+    /// live [`Handle`]s or allocations associated with it.
+    ///
+    /// # Examples
+    /// ```
+    /// use basedrop::{Collector, Handle, Owned};
+    /// use core::mem::drop;
+    ///
+    /// let mut collector = Collector::new();
+    /// let handle = collector.handle();
+    /// let x = Owned::new(&handle, 3);
+    ///
+    /// let result = collector.try_cleanup();
+    /// assert!(result.is_err());
+    /// let mut collector = result.unwrap_err();
+    ///
+    /// drop(handle);
+    /// drop(x);
+    /// collector.collect();
+    ///
+    /// assert!(collector.try_cleanup().is_ok());
+    /// ```
+    ///
+    /// [`Handle`]: crate::Handle
     pub fn try_cleanup(self) -> Result<(), Self> {
         unsafe {
             if (*self.inner).handles.load(Ordering::Acquire) == 0 {
