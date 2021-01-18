@@ -23,10 +23,8 @@ impl<T: Send + 'static> Owned<T> {
 
 impl<T: Clone + Send + 'static> Clone for Owned<T> {
     fn clone(&self) -> Self {
-        Owned {
-            node: unsafe { NonNull::new_unchecked(Node::clone(self.node.as_ptr())) },
-            phantom: PhantomData,
-        }
+        let handle = unsafe { Node::handle(self.node.as_ptr()) };
+        Owned::new(&handle, self.deref().clone())
     }
 }
 

@@ -42,19 +42,11 @@ impl<T> Node<T> {
         let tail = (*collector).tail.swap(node as *mut Node<()>, Ordering::AcqRel);
         (*tail).link.next.store(node as *mut Node<()>, Ordering::Relaxed);
     }
-}
 
-impl<T: Clone> Node<T> {
-    pub unsafe fn clone(node: *mut Node<T>) -> *mut Node<T> {
-        (*(*node).link.collector).allocs.fetch_add(1, Ordering::Relaxed);
-
-        Box::into_raw(Box::new(Node {
-            link: NodeLink {
-                collector: (*node).link.collector,
-            },
-            drop: drop_node::<T>,
-            data: (*node).data.clone(),
-        }))
+    pub unsafe fn handle(node: *mut Node<T>) -> Handle {
+        let collector = (*node).link.collector;
+        (*collector).handles.fetch_add(1, Ordering::Relaxed);
+        Handle { collector }
     }
 }
 
