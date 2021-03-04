@@ -4,9 +4,16 @@ use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 extern crate alloc;
 use alloc::boxed::Box;
 
+#[repr(C)]
+struct NodeHeader {
+    link: NodeLink,
+    drop: unsafe fn(*mut NodeHeader),
+}
+
+#[repr(C)]
 union NodeLink {
     collector: *mut CollectorInner,
-    next: ManuallyDrop<AtomicPtr<Node<()>>>,
+    next: ManuallyDrop<AtomicPtr<NodeHeader>>,
 }
 
 /// An allocation that can be added to its associated [`Collector`]'s drop
@@ -19,14 +26,14 @@ union NodeLink {
 /// [`Collector`]: crate::Collector
 /// [`Owned`]: crate::Owned
 /// [`Shared`]: crate::Shared
+#[repr(C)]
 pub struct Node<T> {
-    link: NodeLink,
-    drop: unsafe fn(*mut Node<()>),
+    header: NodeHeader,
     /// The data stored in this allocation.
     pub data: T,
 }
 
-unsafe fn drop_node<T>(node: *mut Node<()>) {
+unsafe fn drop_node<T>(node: *mut NodeHeader) {
     let _ = Box::from_raw(node as *mut Node<T>);
 }
 
@@ -50,10 +57,12 @@ impl<T: Send + 'static> Node<T> {
         }
 
         Box::into_raw(Box::new(Node {
-            link: NodeLink {
-                collector: handle.collector,
+            header: NodeHeader {
+                link: NodeLink {
+                    collector: handle.collector,
+                },
+                drop: drop_node::<T>,
             },
-            drop: drop_node::<T>,
             data,
         }))
     }
@@ -86,10 +95,10 @@ impl<T> Node<T> {
     /// [`Collector::collect_one`]: crate::Collector::collect_one
     /// [`Node::alloc`]: crate::Node::alloc
     pub unsafe fn queue_drop(node: *mut Node<T>) {
-        let collector = (*node).link.collector;
-        (*node).link.next = ManuallyDrop::new(AtomicPtr::new(core::ptr::null_mut()));
-        let tail = (*collector).tail.swap(node as *mut Node<()>, Ordering::AcqRel);
-        (*tail).link.next.store(node as *mut Node<()>, Ordering::Relaxed);
+        let collector = (*node).header.link.collector;
+        (*node).header.link.next = ManuallyDrop::new(AtomicPtr::new(core::ptr::null_mut()));
+        let tail = (*collector).tail.swap(node as *mut NodeHeader, Ordering::AcqRel);
+        (*tail).link.next.store(node as *mut NodeHeader, Ordering::Relaxed);
     }
 
     /// Gets a [`Handle`] to this `Node`'s associated [`Collector`].
@@ -102,7 +111,7 @@ impl<T> Node<T> {
     /// [`Node::alloc`]: crate::Node::alloc
     /// [`queue_drop`]: crate::Node::queue_drop
     pub unsafe fn handle(node: *mut Node<T>) -> Handle {
-        let collector = (*node).link.collector;
+        let collector = (*node).header.link.collector;
         (*collector).handles.fetch_add(1, Ordering::Relaxed);
         Handle { collector }
     }
@@ -145,7 +154,7 @@ impl Drop for Handle {
 struct CollectorInner {
     handles: AtomicUsize,
     allocs: AtomicUsize,
-    tail: AtomicPtr<Node<()>>,
+    tail: AtomicPtr<NodeHeader>,
 }
 
 /// A garbage collector for [`Owned`] and [`Shared`] allocations.
@@ -159,8 +168,8 @@ struct CollectorInner {
 /// [`Shared`]: crate::Shared
 /// [`try_cleanup`]: crate::Collector::try_cleanup
 pub struct Collector {
-    head: *mut Node<()>,
-    stub: *mut Node<()>,
+    head: *mut NodeHeader,
+    stub: *mut NodeHeader,
     inner: *mut CollectorInner,
 }
 
@@ -170,12 +179,14 @@ impl Collector {
     /// Constructs a new `Collector`.
     pub fn new() -> Collector {
         let head = Box::into_raw(Box::new(Node {
-            link: NodeLink {
-                next: ManuallyDrop::new(AtomicPtr::new(core::ptr::null_mut())),
+            header: NodeHeader {
+                link: NodeLink {
+                    next: ManuallyDrop::new(AtomicPtr::new(core::ptr::null_mut())),
+                },
+                drop: drop_node::<()>,
             },
-            drop: drop_node::<()>,
             data: (),
-        }));
+        })) as *mut NodeHeader;
 
         let inner = Box::into_raw(Box::new(CollectorInner {
             handles: AtomicUsize::new(0),
