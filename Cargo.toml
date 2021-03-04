@@ -1,6 +1,6 @@
 [package]
 name = "basedrop"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Micah Johnston <micah@glowcoil.com>"]
 edition = "2018"
 description = "Memory-management tools for real-time audio and other latency-critical scenarios"
