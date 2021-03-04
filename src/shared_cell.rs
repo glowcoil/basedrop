@@ -2,7 +2,7 @@ use crate::{Node, Shared, SharedInner};
 
 use core::marker::PhantomData;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{fence, AtomicPtr, AtomicUsize, Ordering};
 
 /// A thread-safe shared mutable memory location that holds a [`Shared<T>`].
 ///
@@ -104,6 +104,7 @@ impl<T> SharedCell<T> {
     pub fn replace(&self, value: Shared<T>) -> Shared<T> {
         let old = self.node.swap(value.node.as_ptr(), Ordering::AcqRel);
         while self.readers.load(Ordering::Relaxed) != 0 {}
+        fence(Ordering::Acquire);
         Shared {
             node: unsafe { NonNull::new_unchecked(old) },
             phantom: PhantomData,
