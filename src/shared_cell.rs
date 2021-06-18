@@ -1,8 +1,8 @@
-use crate::{Node, Shared, SharedInner};
-
 use core::marker::PhantomData;
 use core::ptr::NonNull;
-use core::sync::atomic::{fence, AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, fence, Ordering};
+
+use crate::{Node, Shared, SharedInner};
 
 /// A thread-safe shared mutable memory location that holds a [`Shared<T>`].
 ///
@@ -143,5 +143,32 @@ impl<T> Drop for SharedCell<T> {
             node: unsafe { NonNull::new_unchecked(self.node.load(Ordering::Relaxed)) },
             phantom: PhantomData,
         };
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::ops::Deref;
+    use std::sync::{Arc, Mutex};
+
+    use crate::Collector;
+
+    use super::*;
+
+    #[test]
+    fn test_a_shared_cell_will_hold_a_ref_to_the_target() {
+        struct Test(Arc<Mutex<bool>>);
+        impl Drop for Test {
+            fn drop(&mut self) {
+                let mut lock = self.0.lock().unwrap();
+                *lock = true;
+            }
+        }
+        let mut collector = Collector::new();
+        let has_dropped = Arc::new(Mutex::new(false));
+        let owned = SharedCell::new(Shared::new(&collector.handle(), Test(has_dropped.clone())));
+        collector.collect();
+        assert_eq!(*has_dropped.lock().unwrap().deref(), false);
+        let _shared = owned.get();
     }
 }

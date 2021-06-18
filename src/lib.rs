@@ -15,8 +15,6 @@
 //! [`Node`]: crate::Node
 //! [`SharedCell`]: crate::SharedCell
 
-#![no_std]
-
 mod collector;
 mod owned;
 mod shared;

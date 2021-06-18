@@ -1,8 +1,8 @@
-use crate::{Handle, Node};
-
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
+
+use crate::{Handle, Node};
 
 /// An owned smart pointer with deferred collection, analogous to `Box`.
 ///
@@ -65,5 +65,40 @@ impl<T> Drop for Owned<T> {
         unsafe {
             Node::queue_drop(self.node.as_ptr());
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::sync::{Arc, Mutex};
+
+    use crate::Collector;
+
+    use super::*;
+
+    #[test]
+    fn test_we_can_create_an_owned() {
+        struct Test;
+        let collector = Collector::new();
+        let _owned = Owned::new(&collector.handle(), Test{});
+    }
+
+    #[test]
+    fn test_we_can_destruct_an_owned_and_it_will_be_dropped() {
+        struct Test(Arc<Mutex<bool>>);
+        impl Drop for Test {
+            fn drop(&mut self) {
+                let mut lock = self.0.lock().unwrap();
+                *lock = true;
+            }
+        }
+        let mut collector = Collector::new();
+        let has_dropped = Arc::new(Mutex::new(false));
+        {
+            let _owned = Owned::new(&collector.handle(), Test(has_dropped.clone()));
+        }
+        assert_eq!(*has_dropped.lock().unwrap().deref(), false);
+        collector.collect();
+        assert_eq!(*has_dropped.lock().unwrap().deref(), true);
     }
 }
