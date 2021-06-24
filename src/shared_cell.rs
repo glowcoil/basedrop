@@ -31,9 +31,12 @@ impl<T: Send + 'static> SharedCell<T> {
     /// let cell = SharedCell::new(three);
     /// ```
     pub fn new(value: Shared<T>) -> SharedCell<T> {
+        let node = value.node.as_ptr();
+        core::mem::forget(value);
+
         SharedCell {
             readers: AtomicUsize::new(0),
-            node: AtomicPtr::new(value.node.as_ptr()),
+            node: AtomicPtr::new(node),
             phantom: PhantomData,
         }
     }
@@ -57,12 +60,17 @@ impl<T> SharedCell<T> {
     /// [`Shared<T>`]: crate::Shared
     pub fn get(&self) -> Shared<T> {
         self.readers.fetch_add(1, Ordering::SeqCst);
-        let node = self.node.load(Ordering::SeqCst);
-        self.readers.fetch_sub(1, Ordering::Relaxed);
-        Shared {
-            node: unsafe { NonNull::new_unchecked(node) },
+
+        let shared = Shared {
+            node: unsafe { NonNull::new_unchecked(self.node.load(Ordering::SeqCst)) },
             phantom: PhantomData,
-        }
+        };
+        let copy = shared.clone();
+        core::mem::forget(shared);
+
+        self.readers.fetch_sub(1, Ordering::Relaxed);
+
+        copy
     }
 
     /// Replaces the contained [`Shared<T>`], decrementing its reference count
@@ -102,9 +110,13 @@ impl<T> SharedCell<T> {
     ///
     /// [`Shared<T>`]: crate::Shared
     pub fn replace(&self, value: Shared<T>) -> Shared<T> {
-        let old = self.node.swap(value.node.as_ptr(), Ordering::AcqRel);
+        let node = value.node.as_ptr();
+        core::mem::forget(value);
+
+        let old = self.node.swap(node, Ordering::AcqRel);
         while self.readers.load(Ordering::Relaxed) != 0 {}
         fence(Ordering::Acquire);
+
         Shared {
             node: unsafe { NonNull::new_unchecked(old) },
             phantom: PhantomData,
@@ -143,5 +155,51 @@ impl<T> Drop for SharedCell<T> {
             node: unsafe { NonNull::new_unchecked(self.node.load(Ordering::Relaxed)) },
             phantom: PhantomData,
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Collector, Shared, SharedCell};
+
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn shared_cell() {
+        extern crate alloc;
+        use alloc::sync::Arc;
+
+        struct Test(Arc<AtomicUsize>);
+
+        impl Drop for Test {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        let mut collector = Collector::new();
+        let shared = Shared::new(&collector.handle(), Test(counter.clone()));
+        let cell = SharedCell::new(shared);
+        collector.collect();
+
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        let copy = cell.get();
+        let copy2 = cell.replace(copy);
+        collector.collect();
+
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        core::mem::drop(cell);
+        collector.collect();
+
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        core::mem::drop(copy2);
+        collector.collect();
+
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
 }
