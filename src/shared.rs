@@ -98,6 +98,9 @@ impl<T> Deref for Shared<T> {
     }
 }
 
+#[cfg(feature = "stable_deref_trait")]
+unsafe impl<T> stable_deref_trait::StableDeref for Shared<T> {}
+
 impl<T> Drop for Shared<T> {
     fn drop(&mut self) {
         unsafe {

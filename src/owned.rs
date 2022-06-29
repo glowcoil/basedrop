@@ -60,6 +60,9 @@ impl<T> DerefMut for Owned<T> {
     }
 }
 
+#[cfg(feature = "stable_deref_trait")]
+unsafe impl<T> stable_deref_trait::StableDeref for Owned<T> {}
+
 impl<T> Drop for Owned<T> {
     fn drop(&mut self) {
         unsafe {
